@@ -6,6 +6,31 @@
 #include <SoftwareSerial.h>
 #define BUTTON_PIN 8
 
+// RS-485 direction control (tie DE and /RE together to this pin)
+#define RS485_DE_RE_PIN 22
+
+inline void RS485_beginRX() {
+  // LOW: receiver enabled, driver disabled
+  digitalWrite(RS485_DE_RE_PIN, LOW);
+}
+
+inline void RS485_beginTX() {
+  // HIGH: receiver disabled, driver enabled
+  digitalWrite(RS485_DE_RE_PIN, HIGH);
+  delayMicroseconds(100); // guard time so driver actually enables
+}
+
+// Safe send over Serial3 (handles TX/RX switching and flush)
+inline void RS485_sendLine(const String& line) {
+  RS485_beginTX();
+  Serial3.print(line);
+  Serial3.print('\n');        // line terminator for the PC
+  Serial3.flush();            // ensure all bytes shifted out
+  delayMicroseconds(200);     // let the last byte finish on the wire
+  RS485_beginRX();
+}
+
+
 bool buttonPressed = false;
 unsigned long lastDebounceTime = 0;
 unsigned long debounceDelay = 50;
@@ -16,6 +41,11 @@ String date = "";
 String time = "";
 
 void setup() {
+  pinMode(RS485_DE_RE_PIN, OUTPUT);
+  RS485_beginRX();          // default to listening
+  // Keep your existing Serial3.begin(…); value (use same baud as your PC)
+
+
   pinMode(BUTTON_PIN, INPUT_PULLUP);
 
   Serial.begin(115200);     // Debug
@@ -53,10 +83,14 @@ void loop() {
       barcodeData += c;
     }
 
-    Serial3.println("BUTTON_PRESS " + barcodeData); // Notify PC via RS485
+    // Serial3.println("BUTTON_PRESS " + barcodeData); // Notify PC via RS485
+    RS485_sendLine("BUTTON_PRESS " + barcodeData);
     printTicket();                   // Print Ticket via Serial1
     buttonPressed = false;
   }
+
+  // 1) Check for commands from the PC (RS-485)
+  pollHost();
 
   // === Handle RS232 Scanner Input (Serial2) ===
   if (Serial2.available()) {
@@ -64,11 +98,38 @@ void loop() {
     scannedData.trim();
     if (scannedData.length() > 0) {
       Serial.println("Scanned: " + scannedData);
-      Serial3.println(scannedData);
+      // Serial3.println(scannedData);
+      RS485_sendLine(scannedData);
       // You can add logic here if needed
     }
   }
 }
+
+void handleHostLine(const String& line) {
+  if (line == "HELLO") {
+    // Do something visible in Serial Monitor:
+    Serial.println("Hello from PC");
+    // (Optional) and/or acknowledge back to the PC over RS-485:
+    RS485_sendLine("HELLO_OK");
+  }
+  // You can extend with more commands later
+  // else if (line.startsWith("PRINT:")) { ... }
+}
+
+void pollHost() {
+  static String rxBuf;
+  while (Serial3.available()) {
+    char c = (char)Serial3.read();
+    if (c == '\n') {
+      rxBuf.trim();
+      if (rxBuf.length()) handleHostLine(rxBuf);
+      rxBuf = "";
+    } else if (c != '\r') {
+      rxBuf += c;
+    }
+  }
+}
+
 
 void printTicket() {
   Serial.println("I'm trying to print a ticket");

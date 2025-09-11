@@ -2,7 +2,7 @@ from datetime import datetime
 import sys
 import random
 import re
-from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QTextEdit
+from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QTextEdit, QPushButton
 from PyQt5.QtCore import QTimer
 import serial
 
@@ -18,8 +18,13 @@ class BarcodeReaderApp(QWidget):
         self.text_area = QTextEdit()
         self.text_area.setReadOnly(True)
 
+        # NEW: Send button
+        self.btn_send_hello = QPushButton("Send HELLO")
+        self.btn_send_hello.clicked.connect(self.send_hello)
+
         self.layout.addWidget(self.label)
         self.layout.addWidget(self.text_area)
+        self.layout.addWidget(self.btn_send_hello)  # NEW
         self.setLayout(self.layout)
 
         # Serial setup
@@ -40,6 +45,17 @@ class BarcodeReaderApp(QWidget):
         self.timer = QTimer()
         self.timer.timeout.connect(self.read_serial_data)
         self.timer.start(100)  # Check every 100 ms
+
+    # NEW: send HELLO to Arduino over RS-485
+    def send_hello(self):
+        if not self.serial_port:
+            self.text_area.append("⚠️ Serial no disponible.")
+            return
+        try:
+            self.serial_port.write(b"HELLO\n")
+            self.text_area.append("➡️ Enviado a Arduino: HELLO")
+        except serial.SerialException as e:
+            self.text_area.append(f"❌ Error enviando: {e}")
 
     def generate_barcode_with_current_time(self):
         """

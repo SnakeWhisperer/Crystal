@@ -200,7 +200,7 @@ void loop() {
 
   // === If Button Was Pressed, Send Signal & Print Ticket ===
   if (buttonPressed) {
-    if (digitalRead(CAR_PRES_1) == LOW) {
+    if (digitalRead(CAR_PRES_1) == LOW && !CAR_ENTERING) {
       // === Generate 18-char random barcode ===
       barcodeData = "CP";
       for (int i = 0; i < 7; i++) {
@@ -213,8 +213,13 @@ void loop() {
       printTicket();                   // Print Ticket via Serial1
       startEntry();
       buttonPressed = false;
-    } else {
+    } else if (digitalRead(CAR_PRES_1) == LOW) {
       Serial.println("[Entrance] Button pressed but no car detected. Ignoring.");
+      buttonPressed = false;
+    } else if (CAR_ENTERING) {
+      Serial.println("[Entrance] Button pressed but a car is entering. Ignoring.");
+      buttonPressed = false;
+    } else {
       buttonPressed = false;
     }
 

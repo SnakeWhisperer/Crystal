@@ -1,7 +1,11 @@
 
 
 // RS-485 direction control (tie DE and /RE together to this pin)
-#define RS485_DE_RE_PIN 8
+#define RS485_DE_RE_PIN 9
+#define OPEN_BARRIER 28
+#define CLOSE_BARRIER 30
+#define CAR_PRES_1 24
+#define CAR_PRES_2 26
 
 inline void RS485_beginRX() {
   // LOW: receiver enabled, driver disabled
@@ -26,6 +30,11 @@ inline void RS485_sendLine(const String& line) {
 
 
 void setup() {
+  pinMode(RS485_DE_RE_PIN, OUTPUT);
+  pinMode(OPEN_BARRIER, OUTPUT);
+  pinMode(CLOSE_BARRIER, OUTPUT);
+  pinMode(CAR_PRES_1, INPUT);
+  pinMode(CAR_PRES_2, INPUT);
   pinMode(RS485_DE_RE_PIN, OUTPUT);
   RS485_beginRX();          // default to listening
   Serial.begin(115200);     // Debug

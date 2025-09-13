@@ -5,9 +5,78 @@
 
 #include <SoftwareSerial.h>
 #define BUTTON_PIN 8
+#define OPEN_BARRIER 28
+#define CLOSE_BARRIER 30
+#define CAR_PRES_1 24
+#define CAR_PRES_2 26
 
 // RS-485 direction control (tie DE and /RE together to this pin)
 #define RS485_DE_RE_PIN 22
+
+
+
+
+
+
+// --- Entry flow state ---
+bool CAR_ENTERING = false;        // set when ticket is issued
+bool cp1_now, cp2_now;            // current raw states (LOW = present)
+bool cp1_prev = HIGH, cp2_prev = HIGH;
+
+uint32_t closeAt = 0;             // millis() when we’re allowed to close (0 = no timer)
+
+// (optional future) timeouts
+const uint32_t CLEAR_HOLD_MS = 5000;   // 5 s after CP2 clears
+
+
+bool buttonPressed = false;
+unsigned long lastDebounceTime = 0;
+unsigned long debounceDelay = 50;
+bool lastButtonState = HIGH;
+bool currentButtonState = HIGH;
+String barcodeData = "";
+String date = "";
+String time = "";
+
+
+void handleEntryFlow() {
+  // Read current sensor levels
+  cp1_now = carPresent(CAR_PRES_1);
+  cp2_now = carPresent(CAR_PRES_2);
+
+  // Detect edges
+  bool cp1_arrive = (!cp1_prev && cp1_now); // went from false→true → car arrived at loop 1
+  bool cp1_leave  = (cp1_prev && !cp1_now); // went from true→false → car left loop 1
+
+  bool cp2_arrive = (!cp2_prev && cp2_now); // car arrived under barrier
+  bool cp2_leave  = (cp2_prev && !cp2_now); // car left under barrier
+
+  // === Main logic when we're handling a car that just got a ticket ===
+  if (CAR_ENTERING) {
+    // When CP2 (under-barrier) goes from present -> clear, start 5 s hold
+    if (cp2_leave) {
+      closeAt = millis() + CLEAR_HOLD_MS;
+      Serial.println("[Entrance] Under-barrier cleared -> hold timer started.");
+    }
+    // // If CP2 becomes present again before the timer expires, extend the hold
+    // if (cp2_fall && closeAt != 0) {
+    //   closeAt = millis() + CLEAR_HOLD_MS;
+    //   Serial.println("[Entrance] Vehicle re-entered under-barrier -> extend hold.");
+    // }
+    // When the hold expires and CP2 is still clear, close the gate and finish
+    if (closeAt != 0 && millis() >= closeAt && !cp2_now) {
+      pulse(CLOSE_BARRIER, 250);
+      CAR_ENTERING = false;
+      closeAt = 0;
+      Serial.println("[Entrance] Hold elapsed and area clear -> gate closing, entry complete.");
+    }
+  }
+
+  // Latch previous for next loop
+  cp1_prev = cp1_now;
+  cp2_prev = cp2_now;
+}
+
 
 inline void RS485_beginRX() {
   // LOW: receiver enabled, driver disabled
@@ -30,17 +99,33 @@ inline void RS485_sendLine(const String& line) {
   RS485_beginRX();
 }
 
+inline void pulse(uint8_t pin, uint16_t ms) {
+  digitalWrite(pin, HIGH);
+  delay(ms);
+  digitalWrite(pin, LOW);
+}
 
-bool buttonPressed = false;
-unsigned long lastDebounceTime = 0;
-unsigned long debounceDelay = 50;
-bool lastButtonState = HIGH;
-bool currentButtonState = HIGH;
-String barcodeData = "";
-String date = "";
-String time = "";
+inline bool carPresent(uint8_t pin) {        // with INPUT_PULLUP: LOW = present
+  return digitalRead(pin) == LOW;
+}
+
+// Call when you’ve just printed the ticket and want to open the gate
+inline void startEntry() {
+  if (!CAR_ENTERING) {
+    CAR_ENTERING = true;
+    closeAt = 0;                  // not closing yet
+    pulse(OPEN_BARRIER, 250);     // 200–300 ms pulse to the opener
+    Serial.println("[Entrance] Entry armed: gate opening.");
+  }
+}
+
+
 
 void setup() {
+  pinMode(OPEN_BARRIER, OUTPUT);
+  pinMode(CLOSE_BARRIER, OUTPUT);
+  pinMode(CAR_PRES_1, INPUT_PULLUP);
+  pinMode(CAR_PRES_2, INPUT_PULLUP);
   pinMode(RS485_DE_RE_PIN, OUTPUT);
   RS485_beginRX();          // default to listening
   // Keep your existing Serial3.begin(…); value (use same baud as your PC)
@@ -76,18 +161,26 @@ void loop() {
 
   // === If Button Was Pressed, Send Signal & Print Ticket ===
   if (buttonPressed) {
-    // === Generate 18-char random barcode ===
-    barcodeData = "CP";
-    for (int i = 0; i < 7; i++) {
-      char c = "0123456789"[random(10)];
-      barcodeData += c;
+    if (digitalRead(CAR_PRES_1) == LOW) {
+      // === Generate 18-char random barcode ===
+      barcodeData = "CP";
+      for (int i = 0; i < 7; i++) {
+        char c = "0123456789"[random(10)];
+        barcodeData += c;
+      }
+
+      // Serial3.println("BUTTON_PRESS " + barcodeData); // Notify PC via RS485
+      RS485_sendLine("BUTTON_PRESS " + barcodeData);
+      printTicket();                   // Print Ticket via Serial1
+      startEntry();
+      buttonPressed = false;
+    } else {
+      Serial.println("[Entrance] Button pressed but no car detected. Ignoring.");
+      buttonPressed = false;
     }
 
-    // Serial3.println("BUTTON_PRESS " + barcodeData); // Notify PC via RS485
-    RS485_sendLine("BUTTON_PRESS " + barcodeData);
-    printTicket();                   // Print Ticket via Serial1
-    buttonPressed = false;
   }
+    
 
   // 1) Check for commands from the PC (RS-485)
   pollHost();
@@ -103,6 +196,8 @@ void loop() {
       // You can add logic here if needed
     }
   }
+
+  handleEntryFlow();
 }
 
 void handleHostLine(const String& line) {

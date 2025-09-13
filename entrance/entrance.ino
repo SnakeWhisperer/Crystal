@@ -22,11 +22,16 @@
 bool CAR_ENTERING = false;        // set when ticket is issued
 bool cp1_now, cp2_now;            // current raw states (LOW = present)
 bool cp1_prev = HIGH, cp2_prev = HIGH;
+bool gateOpened = false;
 
+uint32_t openAt = 0;              // when to open after ticket
 uint32_t closeAt = 0;             // millis() when we’re allowed to close (0 = no timer)
+uint32_t guardExpireAt = 0;       // cancel/close if CP2 never arrives
 
 // (optional future) timeouts
 const uint32_t CLEAR_HOLD_MS = 5000;   // 5 s after CP2 clears
+const uint32_t OPEN_DELAY_MS = 1000;  // 1 s grace to print & grab ticket
+const uint32_t ENTRY_GUARD_MS = 30000; // 30 s max to see CP2 after ticket
 
 
 bool buttonPressed = false;
@@ -53,6 +58,25 @@ void handleEntryFlow() {
 
   // === Main logic when we're handling a car that just got a ticket ===
   if (CAR_ENTERING) {
+
+    if (!gateOpened && cp1_leave) {
+      CAR_ENTERING = false;
+      openAt = closeAt = guardExpireAt = 0;
+      Serial.println("[Entrance] Panel loop cleared before open -> entry canceled.");
+    }
+
+
+    if (!gateOpened && millis() >= openAt) {
+      pulse(OPEN_BARRIER, 250);     // 200–300 ms pulse to the opener
+      gateOpened = true;
+      Serial.println("[Entrance] Gate opening (after ticket grace).");
+    }
+
+    if (cp2_arrive && guardExpireAt){
+      guardExpireAt = 0;
+      Serial.println("[Entrance] CP2 arrived -> guard canceled.");
+    }
+
     // When CP2 (under-barrier) goes from present -> clear, start 5 s hold
     if (cp2_leave) {
       closeAt = millis() + CLEAR_HOLD_MS;
@@ -69,6 +93,19 @@ void handleEntryFlow() {
       CAR_ENTERING = false;
       closeAt = 0;
       Serial.println("[Entrance] Hold elapsed and area clear -> gate closing, entry complete.");
+    }
+
+    if (guardExpireAt && millis() >= guardExpireAt && !cp2_now){
+      if (gateOpened) {
+        pulse(CLOSE_BARRIER, 250);
+        Serial.println("[Entrance] Guard timeout -> closing without CP2.");
+
+      } else {
+        Serial.println("[Entrance] Guard timeout -> entry canceled before open.");
+      }
+      CAR_ENTERING = false;
+      gateOpened = false;
+      openAt = closeAt = guardExpireAt = 0;
     }
   }
 
@@ -113,9 +150,11 @@ inline bool carPresent(uint8_t pin) {        // with INPUT_PULLUP: LOW = present
 inline void startEntry() {
   if (!CAR_ENTERING) {
     CAR_ENTERING = true;
+    gateOpened = false;
+    openAt = millis() + OPEN_DELAY_MS;    // schedule open
     closeAt = 0;                  // not closing yet
-    pulse(OPEN_BARRIER, 250);     // 200–300 ms pulse to the opener
-    Serial.println("[Entrance] Entry armed: gate opening.");
+    guardExpireAt = millis() + ENTRY_GUARD_MS;    // must see CP2 by then
+    Serial.println("[Entrance] Ticket issued. Opening scheduled in 1s; waiting for CP2.");
   }
 }
 

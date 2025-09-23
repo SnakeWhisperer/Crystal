@@ -13,22 +13,18 @@
 // RS-485 direction control (tie DE and /RE together to this pin)
 #define RS485_DE_RE_PIN 22
 
-
-
-
-
-
 // --- Entry flow state ---
-bool CAR_ENTERING = false;        // set when ticket is issued
-bool cp1_now, cp2_now;            // current raw states (LOW = present)
-bool cp1_prev = HIGH, cp2_prev = HIGH;
+bool CAR_ENTERING = false;        // Set when ticket is issued, means there's an ongoing entering process
+bool cp1_now, cp2_now;            // Current raw states. cp1 is at the printer panel, cp2 is below the barrier
+// These are used to detect the rising and falling edges
+// They are set to HIGH when defined, but the first loop resets them, meaning that there was no car there
+bool cp1_prev = HIGH, cp2_prev = HIGH; 
 bool gateOpened = false;
 
-uint32_t openAt = 0;              // when to open after ticket
-uint32_t closeAt = 0;             // millis() when we’re allowed to close (0 = no timer)
+uint32_t openAt = 0;              // When to open after ticket
+uint32_t closeAt = 0;             // Millis() when we’re allowed to close (0 = no timer)
 uint32_t guardExpireAt = 0;       // cancel/close if CP2 never arrives
 
-// (optional future) timeouts
 const uint32_t CLEAR_HOLD_MS = 5000;   // 5 s after CP2 clears
 const uint32_t OPEN_DELAY_MS = 1000;  // 1 s grace to print & grab ticket
 const uint32_t ENTRY_GUARD_MS = 30000; // 30 s max to see CP2 after ticket
@@ -45,7 +41,7 @@ String time = "";
 
 
 void handleEntryFlow() {
-  // Read current sensor levels
+  // Read current sensor levels. HIGH = There's a car there
   cp1_now = carPresent(CAR_PRES_1);
   cp2_now = carPresent(CAR_PRES_2);
 
@@ -53,25 +49,30 @@ void handleEntryFlow() {
   bool cp1_arrive = (!cp1_prev && cp1_now); // went from false→true → car arrived at loop 1
   bool cp1_leave  = (cp1_prev && !cp1_now); // went from true→false → car left loop 1
 
-  bool cp2_arrive = (!cp2_prev && cp2_now); // car arrived under barrier
-  bool cp2_leave  = (cp2_prev && !cp2_now); // car left under barrier
+  bool cp2_arrive = (!cp2_prev && cp2_now); // same as above - car arrived under barrier
+  bool cp2_leave  = (cp2_prev && !cp2_now); // same as above -  car left under barrier
 
   // === Main logic when we're handling a car that just got a ticket ===
+  // CAR_ENTERING is set when a ticket is printed and an entry process starts
   if (CAR_ENTERING) {
 
+    // If the car leaves before the gate is opened, the entry process needs to be canceled.
+    // This is practically impossible, as the car would need to leave within 1 second after the ticket is printed
     if (!gateOpened && cp1_leave) {
       CAR_ENTERING = false;
       openAt = closeAt = guardExpireAt = 0;
       Serial.println("[Entrance] Panel loop cleared before open -> entry canceled.");
     }
 
-
+    // When the time has passed (1s) after printing a ticket and the gate hasn't opened, open it
     if (!gateOpened && millis() >= openAt) {
       pulse(OPEN_BARRIER, 250);     // 200–300 ms pulse to the opener
       gateOpened = true;
       Serial.println("[Entrance] Gate opening (after ticket grace).");
     }
 
+    // When the car gets under the barrier, cancel the 30s (change this)
+    // wait to close if the car never gets there after the ticket is printed
     if (cp2_arrive && guardExpireAt){
       guardExpireAt = 0;
       Serial.println("[Entrance] CP2 arrived -> guard canceled.");
@@ -87,6 +88,7 @@ void handleEntryFlow() {
     //   closeAt = millis() + CLEAR_HOLD_MS;
     //   Serial.println("[Entrance] Vehicle re-entered under-barrier -> extend hold.");
     // }
+
     // When the hold expires and CP2 is still clear, close the gate and finish
     if (closeAt != 0 && millis() >= closeAt && !cp2_now) {
       pulse(CLOSE_BARRIER, 250);
@@ -95,7 +97,9 @@ void handleEntryFlow() {
       Serial.println("[Entrance] Hold elapsed and area clear -> gate closing, entry complete.");
     }
 
+    // When the guard time (30s - change this) passes, and there is still no car there, close the barrier
     if (guardExpireAt && millis() >= guardExpireAt && !cp2_now){
+      // If the gate is opened, close it and print the message
       if (gateOpened) {
         pulse(CLOSE_BARRIER, 250);
         Serial.println("[Entrance] Guard timeout -> closing without CP2.");
@@ -103,6 +107,7 @@ void handleEntryFlow() {
       } else {
         Serial.println("[Entrance] Guard timeout -> entry canceled before open.");
       }
+      // Whether the gate is opened or not, do the same - cancel the entry process
       CAR_ENTERING = false;
       gateOpened = false;
       openAt = closeAt = guardExpireAt = 0;
@@ -213,6 +218,7 @@ void loop() {
       printTicket();                   // Print Ticket via Serial1
       startEntry();
       buttonPressed = false;
+      // NOTE: This needs to change. See the exit
     } else if (digitalRead(CAR_PRES_1) == LOW) {
       Serial.println("[Entrance] Button pressed but no car detected. Ignoring.");
       buttonPressed = false;

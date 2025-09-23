@@ -6,6 +6,105 @@
 #define CLOSE_BARRIER 30
 #define CAR_PRES_1 24
 #define CAR_PRES_2 26
+#define US_TRIG 31
+#define US_ECHO 29
+
+
+// --- Exit flow state ---
+bool CAR_EXITING = false;        // set when ticket read and approved
+bool cp1_now, cp2_now;            // current raw states (LOW = present)
+bool cp1_prev = HIGH, cp2_prev = HIGH;
+bool gateOpened = false;
+
+uint32_t openAt = 0;              // when to open after ticket approval
+uint32_t closeAt = 0;             // millis() when we’re allowed to close (0 = no timer)
+uint32_t guardExpireAt = 0;       // cancel/close if CP2 never arrives
+
+// (optional future) timeouts
+const uint32_t CLEAR_HOLD_MS = 5000;   // 5 s after CP2 clears
+const uint32_t OPEN_DELAY_MS = 1000;  // 1 s grace to press gas
+const uint32_t EXIT_GUARD_MS = 30000; // 30 s max to see CP2 after ticket approval
+
+void handleExitFlow() {
+  // Read current sensor levels
+  cp1_now = carPresent(CAR_PRES_1);
+  cp2_now = carPresent(CAR_PRES_2);
+
+  // Detect edges
+  bool cp1_arrive = (!cp1_prev && cp1_now); // went from false→true → car arrived at loop 1
+  bool cp1_leave  = (cp1_prev && !cp1_now); // went from true→false → car left loop 1
+
+  bool cp2_arrive = (!cp2_prev && cp2_now); // car arrived under barrier
+  bool cp2_leave  = (cp2_prev && !cp2_now); // car left under barrier
+
+  if (CAR_EXITING) {
+    if (!gateOpened && cp1_leave) {
+      CAR_EXITING = false;
+      openAt = closeAt = guardExpireAt = 0;
+      Serial.println("[Exit] Panel loop cleared before open -> exit canceled.");
+    }
+
+    if (!gateOpened && millis() >= openAt){
+      pulse(OPEN_BARRIER, 250);
+      gateOpened = true;
+      Serial.println("[Exit] Gate opening (after gas grace).");
+    }
+
+    if (cp2_leave) {
+      closeAt = millis () + CLEAR_HOLD_MS;
+      Serial.println("[Exit] Under-barrier cleared -> hold timer started.");
+    }
+
+    if (closeAt != 0 && millis() >= closeAt && !cp2_now) {
+      pulse(CLOSE_BARRIER, 1050);
+      CAR_EXITING = false;
+      closeAt = 0;
+      Serial.println("[Exit] Hodl elapsed and area clear -> gate closing, exit complete.");
+    }
+
+    if (guardExpireAt && millis() >= guardExpireAt && !cp2_now) {
+      if (gateOpened) {
+        pulse(CLOSE_BARRIER, 250);
+        Serial.println("[Exit] Guard timeout -> closing without CP2.");
+
+      } else {
+        pulse(CLOSE_BARRIER, 250);
+        Serial.println("[Exit] Guard timeout -> exit canceled before open");
+      }
+      CAR_EXITING = false;
+      gateOpened = false;
+      openAt = closeAt = guardExpireAt = 0;
+    }
+  }
+  // Latch previous for next loop
+  cp1_prev = cp1_now;
+  cp2_prev = cp2_now;
+
+}
+
+inline void pulse(uint8_t pin, uint16_t ms) {
+  digitalWrite(pin, HIGH);
+  delay(ms);
+  digitalWrite(pin, LOW);
+}
+
+inline bool carPresent(uint8_t pin) {        // with INPUT_PULLUP: LOW = present
+  return digitalRead(pin) == LOW;
+}
+
+
+// Call when you’ve just approved the ticket and want to open the gate
+inline void startExit() {
+  if (!CAR_EXITING) {
+    CAR_EXITING = true;
+    gateOpened = false;
+    openAt = millis() + OPEN_DELAY_MS;    // schedule open
+    closeAt = 0;                  // not closing yet
+    guardExpireAt = millis() + EXIT_GUARD_MS;    // must see CP2 by then
+    Serial.println("[Exit] Ticket read (approved?). Opening scheduled in 1s; waiting for CP2.");
+  }
+}
+
 
 inline void RS485_beginRX() {
   // LOW: receiver enabled, driver disabled
@@ -29,13 +128,36 @@ inline void RS485_sendLine(const String& line) {
 }
 
 
+long readUltrasonicCM() {
+  // clear TRIG
+  digitalWrite(US_TRIG, LOW);
+  delayMicroseconds(2);
+
+  // 10 us trigger pulse
+  digitalWrite(US_TRIG, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(US_TRIG, LOW);
+
+  // measure ECHO pulse length
+  long duration = pulseIn(US_ECHO, HIGH, 30000UL); // 30 ms timeout (~5 m max)
+
+  // Distance = (pulse time x speed of sound) / 2
+  // convert to cm(speed of sound ~343 m/s)
+  long distance = duration / 58; // us to cm
+
+  if (duration == 0) return -1; // timeout / no echo
+  return distance;
+}
+
 void setup() {
   pinMode(RS485_DE_RE_PIN, OUTPUT);
   pinMode(OPEN_BARRIER, OUTPUT);
   pinMode(CLOSE_BARRIER, OUTPUT);
-  pinMode(CAR_PRES_1, INPUT);
-  pinMode(CAR_PRES_2, INPUT);
+  pinMode(CAR_PRES_1, INPUT_PULLUP);
+  pinMode(CAR_PRES_2, INPUT_PULLUP);
   pinMode(RS485_DE_RE_PIN, OUTPUT);
+  pinMode(US_TRIG, OUTPUT);
+  pinMode(US_ECHO, INPUT);
   RS485_beginRX();          // default to listening
   Serial.begin(115200);     // Debug
   Serial2.begin(19200);     // RS232 Scanner
@@ -56,12 +178,33 @@ void loop() {
     if (code.length() > 0) {
       Serial.print("Scan: ");
       Serial.println(code);                       // print once, with newline
-
-      // Send to the PC over RS-485 using the same medium-control logic as entrance
-      // (TX window open -> send -> close -> back to RX)
-      RS485_sendLine(String("EXIT SCAN ") + code);
+    if (digitalRead(CAR_PRES_1) == LOW && !CAR_EXITING) {
+        // Send to the PC over RS-485 using the same medium-control logic as entrance
+        // (TX window open -> send -> close -> back to RX)
+        RS485_sendLine(String("EXIT SCAN ") + code);
+        startExit();
+      }
+    } else if (digitalRead(CAR_PRES_1) != LOW) {
+      Serial.println("[Exit] Ticket presented, but there's no car there. Ignoring.");
+    } else if (CAR_EXITING) {
+      Serial.println("[Exit] Ticket presented but a car is exiting.");
+      // NOTE: These conditionals will need to change when the ticket is evaluated
     }
   }
+
+  handleExitFlow();
+
+  long d = readUltrasonicCM();
+  if (d > 0 && d < 120) { // within 1 m, car under barrier
+    Serial.print("[Exit] Car detected at barrier");
+    Serial.print(d);
+    Serial.println(" cm");
+    // set a boolean like EXIT_CAR_PRESENT = true;
+  } else {
+    // EXIT_CAR_PRESENT = false;
+  }
+
+  delay(100); // don't hammer it too fast, 10 Hz is plenty
 }
 
 

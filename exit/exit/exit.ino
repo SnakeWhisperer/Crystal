@@ -26,35 +26,50 @@ const uint32_t OPEN_DELAY_MS = 1000;  // 1 s grace to press gas
 const uint32_t EXIT_GUARD_MS = 30000; // 30 s max to see CP2 after ticket approval
 
 void handleExitFlow() {
-  // Read current sensor levels
+  // Read current sensor levels. HIGH = There's a car there
   cp1_now = carPresent(CAR_PRES_1);
-  cp2_now = carPresent(CAR_PRES_2);
+  // cp2_now = carPresent(CAR_PRES_2);
 
   // Detect edges
   bool cp1_arrive = (!cp1_prev && cp1_now); // went from false→true → car arrived at loop 1
   bool cp1_leave  = (cp1_prev && !cp1_now); // went from true→false → car left loop 1
 
-  bool cp2_arrive = (!cp2_prev && cp2_now); // car arrived under barrier
-  bool cp2_leave  = (cp2_prev && !cp2_now); // car left under barrier
+  bool cp2_arrive = (!cp2_prev && cp2_now); // same as above - car arrived under barrier
+  bool cp2_leave  = (cp2_prev && !cp2_now); // same as above -  car left under barrier
 
+  // === Main logic when we're handling a car that just presented a ticket ===
+  // CAR_EXITING is set when a ticket is presented and an exit process starts
   if (CAR_EXITING) {
+
+    // If the car leaves before the gate is opened, the exit process needs to be canceled.
+    // This is practically impossible, as the car would need to leave within 1 second after the ticket is presented
     if (!gateOpened && cp1_leave) {
       CAR_EXITING = false;
       openAt = closeAt = guardExpireAt = 0;
       Serial.println("[Exit] Panel loop cleared before open -> exit canceled.");
     }
 
+    // When the time has passed (1s) after presenting and approving a ticket and the gate hasn't opened, open it
     if (!gateOpened && millis() >= openAt){
       pulse(OPEN_BARRIER, 250);
       gateOpened = true;
       Serial.println("[Exit] Gate opening (after gas grace).");
     }
 
+    // When the car gets under the barrier, cancel the 30s (change this)
+    // wait to close if the car never gets there after the ticket is presented and approved
+    if (cp2_arrive && guardExpireAt){
+      guardExpireAt = 0;
+      Serial.println("[Exit] CP2 arrived -> guard canceled.");
+    }
+
+    // When CP2 (under-barrier) goes from present -> clear, start 5 s hold
     if (cp2_leave) {
       closeAt = millis () + CLEAR_HOLD_MS;
       Serial.println("[Exit] Under-barrier cleared -> hold timer started.");
     }
 
+    // When the hold expires and CP2 is still clear, close the gate and finish
     if (closeAt != 0 && millis() >= closeAt && !cp2_now) {
       pulse(CLOSE_BARRIER, 1050);
       CAR_EXITING = false;
@@ -62,7 +77,9 @@ void handleExitFlow() {
       Serial.println("[Exit] Hodl elapsed and area clear -> gate closing, exit complete.");
     }
 
+    // When the guard time (30s - change this) passes, and there is still no car there, close the barrier
     if (guardExpireAt && millis() >= guardExpireAt && !cp2_now) {
+      // If the gate is opened, close it and print the message
       if (gateOpened) {
         pulse(CLOSE_BARRIER, 250);
         Serial.println("[Exit] Guard timeout -> closing without CP2.");
@@ -71,6 +88,7 @@ void handleExitFlow() {
         pulse(CLOSE_BARRIER, 250);
         Serial.println("[Exit] Guard timeout -> exit canceled before open");
       }
+      // Whether the gate is opened or not, do the same - cancel the exit process
       CAR_EXITING = false;
       gateOpened = false;
       openAt = closeAt = guardExpireAt = 0;
@@ -192,7 +210,7 @@ void loop() {
     }
   }
 
-  handleExitFlow();
+  
 
   long d = readUltrasonicCM();
   if (d > 0 && d < 120) { // within 1 m, car under barrier
@@ -200,9 +218,13 @@ void loop() {
     Serial.print(d);
     Serial.println(" cm");
     // set a boolean like EXIT_CAR_PRESENT = true;
+    cp2_now = true;
   } else {
     // EXIT_CAR_PRESENT = false;
+    cp2_now = false;
   }
+
+  handleExitFlow();
 
   delay(100); // don't hammer it too fast, 10 Hz is plenty
 }

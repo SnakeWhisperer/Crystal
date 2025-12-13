@@ -10,6 +10,11 @@
 #define US_ECHO 29
 
 
+bool WAITING_FOR_EXIT_OK = false;
+unsigned long exitReqMillis = 0;
+const unsigned long EXIT_TIMEOUT_MS = 8000;
+String lastExitBarcode = "";
+
 // --- Exit flow state ---
 bool CAR_EXITING = false;        // set when ticket read and approved
 bool cp1_now, cp2_now;            // current raw states (LOW = present)
@@ -184,6 +189,58 @@ void setup() {
   Serial.println("System Ready.");
 }
 
+void handleHostLine(const String& line) { 
+  // if (line == "HELLO") {
+  //   // Do something visible in Serial Monitor:
+  //   Serial.println("Hello from PC");
+  //   // (Optional) and/or acknowledge back to the PC over RS-485:
+  //   RS485_sendLine("HELLO_OK");
+  // }
+  // You can extend with more commands later
+  // else if (line.startsWith("PRINT:")) { ... }
+
+  if (WAITING_FOR_EXIT_OK) {
+    if (line == "EXIT_OK" || line.startsWith("EXIT_OK ")) {
+
+      // Optional: verify barcode matches
+      // if (line.startsWith("EXIT_OK ")) {
+      //   String code = line.substring(8);
+      //   code.trim();
+      //   if (code.length() && code != lastExitBarcode) {
+      //     Serial.println("[EXIT] EXIT_OK received but barcode mismatch. Ignoring.");
+      //     return;
+      //   }
+      // }
+
+      WAITING_FOR_EXIT_OK = false;
+      Serial.println("[EXIT] Payment approved. Opening barrier...");
+      startExit();
+      lastExitBarcode = "";
+      return;
+    }
+
+    if (line == "EXIT_NO" || line.startsWith("EXIT_NO")) {
+      WAITING_FOR_EXIT_OK = false;
+      Serial.println("[EXIT] Payment rejected. Not opening barrier.");
+      lastExitBarcode = "";
+      return;
+    }
+  }
+}
+
+void pollHost() {
+  static String rxBuf;
+  while (Serial3.available()) {
+    char c = (char)Serial3.read();
+    if (c == '\n') {
+      rxBuf.trim();
+      if (rxBuf.length()) handleHostLine(rxBuf);
+      rxBuf = "";
+    } else if (c != '\r') {
+      rxBuf += c;
+    }
+  }
+}
 
 void loop() {
 
@@ -192,28 +249,42 @@ void loop() {
 
   if (Serial2.available()) {
     String code = Serial2.readStringUntil('\n');  // read until LF
-    code.trim();                                  // strip CR/LF if present
+
+    // code.trim();                                  // strip CR/LF if present
     if (code.length() > 0) {
       Serial.print("Scan: ");
       Serial.println(code);                       // print once, with newline
-    if (digitalRead(CAR_PRES_1) == LOW && !CAR_EXITING) {
-        // Send to the PC over RS-485 using the same medium-control logic as entrance
-        // (TX window open -> send -> close -> back to RX)
-        RS485_sendLine(String("EXIT SCAN ") + code);
-        startExit();
-      }
+    }
+    if (digitalRead(CAR_PRES_1) == LOW && !CAR_EXITING && !WAITING_FOR_EXIT_OK) {
+      lastExitBarcode = code;
+      WAITING_FOR_EXIT_OK = true;
+      exitReqMillis = millis();
+
+      // Send to the PC over RS-485 using the same medium-control logic as entrance
+      // (TX window open -> send -> close -> back to RX)
+      RS485_sendLine(String("EXIT SCAN ") + code);
+      Serial.println("[Exit] Sent EXIT_SCAN to PC. Waiting for approval...");
+      // startExit();
+      
     } else if (digitalRead(CAR_PRES_1) != LOW) {
       Serial.println("[Exit] Ticket presented, but there's no car there. Ignoring.");
     } else if (CAR_EXITING) {
       Serial.println("[Exit] Ticket presented but a car is exiting.");
-      // NOTE: These conditionals will need to change when the ticket is evaluated
+    } else if (WAITING_FOR_EXIT_OK) {
+      Serial.print("[Exit] Already waiting for approval. Ignoring extra scan.");
     }
+  }
+
+  if (WAITING_FOR_EXIT_OK && (millis() - exitReqMillis > EXIT_TIMEOUT_MS)) {
+    WAITING_FOR_EXIT_OK = false;
+    Serial.println("[Exit] Timeout waiting for PC approval.");
+    lastExitBarcode = "";
   }
 
   
 
   long d = readUltrasonicCM();
-  if (d > 0 && d < 120) { // within 1 m, car under barrier
+  if (d > 0 && d < 200) { // within 1 m, car under barrier
     Serial.print("[Exit] Car detected at barrier");
     Serial.print(d);
     Serial.println(" cm");
@@ -230,29 +301,8 @@ void loop() {
 }
 
 
-void handleHostLine(const String& line) {
-  // if (line == "HELLO") {
-  //   // Do something visible in Serial Monitor:
-  //   Serial.println("Hello from PC");
-  //   // (Optional) and/or acknowledge back to the PC over RS-485:
-  //   RS485_sendLine("HELLO_OK");
-  // }
-  // You can extend with more commands later
-  // else if (line.startsWith("PRINT:")) { ... }
-}
 
-void pollHost() {
-  static String rxBuf;
-  while (Serial3.available()) {
-    char c = (char)Serial3.read();
-    if (c == '\n') {
-      rxBuf.trim();
-      if (rxBuf.length()) handleHostLine(rxBuf);
-      rxBuf = "";
-    } else if (c != '\r') {
-      rxBuf += c;
-    }
-  }
-}
+
+
 
 

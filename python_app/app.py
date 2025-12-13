@@ -1,9 +1,11 @@
 from datetime import datetime
+import json
 import sys
 import random
 import re
 from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QTextEdit, QPushButton
 from PyQt5.QtCore import QTimer
+import requests
 import serial
 
 class BarcodeReaderApp(QWidget):
@@ -66,19 +68,41 @@ class BarcodeReaderApp(QWidget):
         return now.strftime("CP%Y%m%d%H%M%S")
 
     def read_serial_data(self):
+        url_generate = "https://ingcoders.com/parking/index.php/api/generate_code"
         if self.serial_port and self.serial_port.in_waiting > 0:
             data = self.serial_port.readline().decode(errors='ignore').strip()
             if not data:
                 return  # Skip empty data
             print(f"[DEBUG] Raw serial input: {data}")
             if "BUTTON_PRESS" in data:
+                payload_generate = {'number': '1'} # Send as string, like in curl
+                headers = {
+                    # Pretend to be curl
+                    "User-Agent": "curl/8.0.0",
+                    "Accept": "*/*",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                }
+
+                response = requests.post(url_generate, data=payload_generate, headers=headers, timeout=10)
+
+                s = response.text
+                print(f'Response: {response.text}')
+                data = json.loads(s)
+                code = data["code"]
+
+                self.text_area.append("Requested a barcode")
+                self.text_area.append(f"Got the barcode: {code}")
+                self.serial_port.write((code + "\n").encode("ascii"))
+                self.serial_port.flush()
+
+
                 generated = self.generate_barcode_with_current_time()
                 # self.serial_port.write(f"{generated}\n".encode())
-                match = re.match(r'^BUTTON_PRESS\s+(.+)$', data)
+                # match = re.match(r'^BUTTON_PRESS\s+(.+)$', data)
 
-                if match:
-                    barcode = match.group(1)
-                    self.text_area.append(f"\nNuevo código de barras generado: {barcode}\n")
+                # if match:
+                #     barcode = match.group(1)
+                #     self.text_area.append(f"\nNuevo código de barras generado: {barcode}\n")
                 # generated = self.generate_barcode()
                 # self.text_area.append(f"\nNuevo código de barras generado: {generated}\n")
             elif data.strip():

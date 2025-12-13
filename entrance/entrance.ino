@@ -13,6 +13,11 @@
 // RS-485 direction control (tie DE and /RE together to this pin)
 #define RS485_DE_RE_PIN 22
 
+bool WAITING_FOR_BARCODE = false;
+unsigned long barcodeReqMillis = 0;
+const unsigned long BARCODE_TIMEOUT_MS = 5000;
+String pendingBarcode = "";
+
 // --- Entry flow state ---
 bool CAR_ENTERING = false;        // Set when ticket is issued, means there's an ongoing entering process
 bool cp1_now, cp2_now;            // Current raw states. cp1 is at the printer panel, cp2 is below the barrier
@@ -25,9 +30,9 @@ uint32_t openAt = 0;              // When to open after ticket
 uint32_t closeAt = 0;             // Millis() when we’re allowed to close (0 = no timer)
 uint32_t guardExpireAt = 0;       // cancel/close if CP2 never arrives
 
-const uint32_t CLEAR_HOLD_MS = 5000;   // 5 s after CP2 clears
+const uint32_t CLEAR_HOLD_MS = 6000;   // 5 s after CP2 clears
 const uint32_t OPEN_DELAY_MS = 1000;  // 1 s grace to print & grab ticket
-const uint32_t ENTRY_GUARD_MS = 30000; // 30 s max to see CP2 after ticket
+const uint32_t ENTRY_GUARD_MS = 45000; // 30 s max to see CP2 after ticket
 
 
 bool buttonPressed = false;
@@ -206,20 +211,35 @@ void loop() {
   // === If Button Was Pressed, Send Signal & Print Ticket ===
   if (buttonPressed) {
     if (digitalRead(CAR_PRES_1) == LOW && !CAR_ENTERING) {
-      // === Generate 18-char random barcode ===
-      barcodeData = "CP";
-      for (int i = 0; i < 7; i++) {
-        char c = "0123456789"[random(10)];
-        barcodeData += c;
+
+      if (!WAITING_FOR_BARCODE) {
+        RS485_sendLine("BUTTON_PRESS");
+        WAITING_FOR_BARCODE = true;
+        barcodeReqMillis = millis();
+
+        Serial.println("[Entrance] BUTTON_PRESS sent to PC. Waiting for barcode...");
+      } else {
+        Serial.println("[Entrance] Already waiting for barcode. Ignoring extra press");
       }
 
-      // Serial3.println("BUTTON_PRESS " + barcodeData); // Notify PC via RS485
-      RS485_sendLine("BUTTON_PRESS " + barcodeData);
-      printTicket();                   // Print Ticket via Serial1
-      startEntry();
       buttonPressed = false;
+    
+
+
+      // // === Generate 18-char random barcode ===
+      // barcodeData = "CP";
+      // for (int i = 0; i < 7; i++) {
+      //   char c = "0123456789"[random(10)];
+      //   barcodeData += c;
+      // }
+
+      // // Serial3.println("BUTTON_PRESS " + barcodeData); // Notify PC via RS485
+      // RS485_sendLine("BUTTON_PRESS " + barcodeData);
+      // printTicket();                   // Print Ticket via Serial1
+      // startEntry();
+      // buttonPressed = false;
       // NOTE: This needs to change. See the exit
-    } else if (digitalRead(CAR_PRES_1) == LOW) {
+    } else if (digitalRead(CAR_PRES_1) == HIGH) {
       Serial.println("[Entrance] Button pressed but no car detected. Ignoring.");
       buttonPressed = false;
     } else if (CAR_ENTERING) {
@@ -229,6 +249,11 @@ void loop() {
       buttonPressed = false;
     }
 
+  }
+
+  if (WAITING_FOR_BARCODE && (millis() - barcodeReqMillis > BARCODE_TIMEOUT_MS)) {
+    WAITING_FOR_BARCODE = false;
+    Serial.print("[Entrance] Barcode timeout. No response from PC.\n");
   }
     
 
@@ -250,12 +275,36 @@ void loop() {
   handleEntryFlow();
 }
 
+bool isValidBarcode9(const String& s){
+  if (s.length() != 9) return false;
+  for (int i=0; i<9; i++) {
+    if (!isDigit(s[i])) return false;
+  }
+  return true;
+}
+
 void handleHostLine(const String& line) {
   if (line == "HELLO") {
     // Do something visible in Serial Monitor:
     Serial.println("Hello from PC");
     // (Optional) and/or acknowledge back to the PC over RS-485:
     RS485_sendLine("HELLO_OK");
+  } else if ( WAITING_FOR_BARCODE && isValidBarcode9(line)) {
+    pendingBarcode = line;
+    WAITING_FOR_BARCODE = false;
+
+    Serial.print("[Entrance] Barcode received from PC: ");
+    Serial.print(pendingBarcode);
+
+    printTicket(pendingBarcode);
+    startEntry();
+
+    pendingBarcode = "";
+    return;
+  } else if (WAITING_FOR_BARCODE) {
+    Serial.print("[Entrance] Unexpected host line while waiting: ");
+    Serial.print(line);
+    return;
   }
   // You can extend with more commands later
   // else if (line.startsWith("PRINT:")) { ... }
@@ -276,8 +325,8 @@ void pollHost() {
 }
 
 
-void printTicket() {
-  Serial.println("I'm trying to print a ticket");
+void printTicket(const String& code) {
+  Serial.println("I'm trying to print a ticket\n");
 
   Serial1.write(27); Serial1.write('@');  // ESC @: Initialize
 
@@ -314,12 +363,13 @@ void printTicket() {
   Serial1.write(0x1D); Serial1.write('k'); Serial1.write(4);
 
   // Send barcode data (CODE39 must be printable ASCII)
-  Serial1.print(barcodeData);  // e.g., "CP123456"
+  Serial1.print(code);  // e.g., "CP123456"
   Serial1.write(0x00);         // Null terminator required for CODE39
 
   Serial1.println();
   Serial1.println("========================");
   Serial1.println("  Que tenga un buen dia!");
+  Serial1.write(10); Serial1.write(10);  // Feed lines
   Serial1.write(10); Serial1.write(10);  // Feed lines
 }
 

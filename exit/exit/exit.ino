@@ -198,7 +198,7 @@ void handleHostLine(const String& line) {
   // }
   // You can extend with more commands later
   // else if (line.startsWith("PRINT:")) { ... }
-
+  Serial.println(line);
   if (WAITING_FOR_EXIT_OK) {
     if (line == "EXIT_OK" || line.startsWith("EXIT_OK ")) {
 
@@ -231,13 +231,26 @@ void handleHostLine(const String& line) {
 void pollHost() {
   static String rxBuf;
   while (Serial3.available()) {
-    char c = (char)Serial3.read();
+    uint8_t b = (uint8_t)Serial3.read();
+    // char c = (char)Serial3.read();
+
+    Serial.print("[RS485 RX char] ");
+    Serial.println(b);  // prints byte value
+
+    if (b == 0x00) continue;  // ignore NUL
+    if (b == '\r') continue;  // ignore CR
+
+    char c = (char)b;
+
     if (c == '\n') {
       rxBuf.trim();
       if (rxBuf.length()) handleHostLine(rxBuf);
       rxBuf = "";
-    } else if (c != '\r') {
-      rxBuf += c;
+    } else {
+      // Optional extra hardening: accept only printable ASCII + underscore
+      if (c >= 32 && c <= 126) rxBuf += c;
+    // } else if (c != '\r') {
+    //   rxBuf += c;
     }
   }
 }
@@ -249,6 +262,7 @@ void loop() {
 
   if (Serial2.available()) {
     String code = Serial2.readStringUntil('\n');  // read until LF
+    Serial.println(code);
 
     // code.trim();                                  // strip CR/LF if present
     if (code.length() > 0) {

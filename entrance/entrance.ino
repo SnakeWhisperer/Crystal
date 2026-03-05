@@ -18,6 +18,11 @@ unsigned long barcodeReqMillis = 0;
 const unsigned long BARCODE_TIMEOUT_MS = 5000;
 String pendingBarcode = "";
 
+bool WAITING_FOR_ENTRY_OK = false;
+unsigned long entryReqMillis = 0;
+const unsigned long ENTRY_TIMEOUT_MS = 8000;
+String lastEntryCard = "";
+
 // --- Entry flow state ---
 bool CAR_ENTERING = false;        // Set when ticket is issued, means there's an ongoing entering process
 bool cp1_now, cp2_now;            // Current raw states. cp1 is at the printer panel, cp2 is below the barrier
@@ -168,6 +173,16 @@ inline void startEntry() {
   }
 }
 
+String normalizeCardCode(String s){
+  s.trim();
+  if (s.length() > 0 && (s[0] == 'M' || s[0] == 'm')) {
+    s.remove(0, 1); // remove first char
+    s.trim();
+  }
+
+  return s;
+}
+
 
 
 void setup() {
@@ -260,14 +275,39 @@ void loop() {
   // 1) Check for commands from the PC (RS-485)
   pollHost();
 
+  if (WAITING_FOR_ENTRY_OK && (millis() - entryReqMillis > ENTRY_TIMEOUT_MS)) {
+    WAITING_FOR_ENTRY_OK = false;
+    Serial.println("[Entrance] Timeout waiting for entry approval.");
+    lastEntryCard = "";
+  }
+
   // === Handle RS232 Scanner Input (Serial2) ===
   if (Serial2.available()) {
     String scannedData = Serial2.readStringUntil('\n');
-    scannedData.trim();
+    scannedData = normalizeCardCode(scannedData);
+
     if (scannedData.length() > 0) {
       Serial.println("Scanned: " + scannedData);
+
+      if (digitalRead(CAR_PRES_1) == LOW && !CAR_ENTERING && !WAITING_FOR_ENTRY_OK) {
+
+        lastEntryCard = scannedData;
+        WAITING_FOR_ENTRY_OK = true;
+        entryReqMillis = millis();
+        RS485_sendLine(String("ENTRY_SCAN ") + scannedData);
+        Serial.println("[ENTRANCE] ENTRY_SCAN sent to PC. Waiting for approval...");
+
+      } else if (digitalRead(CAR_PRES_1) != LOW) {
+        Serial.println("[ENTRANCE] Card scanned but no car detected. Ignoring.");
+
+      } else if (CAR_ENTERING) {
+        Serial.println("[ENTRANCE] Card scanned but a car is already entering. Ignoring");
+      } else if (WAITING_FOR_ENTRY_OK) {
+        Serial.println("[ENTRANCE] Already waiting for entry approval. Ignoring scan.");
+      }
+
       // Serial3.println(scannedData);
-      RS485_sendLine(scannedData);
+      
       // You can add logic here if needed
     }
   }
@@ -305,6 +345,19 @@ void handleHostLine(const String& line) {
     Serial.print("[Entrance] Unexpected host line while waiting: ");
     Serial.print(line);
     return;
+  } else if (WAITING_FOR_ENTRY_OK) {
+    if(line == "ENTRY_OK") {
+      WAITING_FOR_ENTRY_OK = false;
+      Serial.println("[ENTRANCE] Entry approved. Starting entry...");
+      startEntry();
+      lastEntryCard = "";
+      return;
+    } else if (line == "ENTRY_NO") {
+      WAITING_FOR_ENTRY_OK = false;
+      Serial.println("[ENTRANCE] Entry denied. Barrier stays closed.");
+      lastEntryCard = "";
+      return;
+    }
   }
   // You can extend with more commands later
   // else if (line.startsWith("PRINT:")) { ... }

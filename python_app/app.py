@@ -70,6 +70,7 @@ class BarcodeReaderApp(QWidget):
     def read_serial_data(self):
         url_generate = "https://ingcoders.com/parking/index.php/api/generate_code"
         url_code = "https://ingcoders.com/parking/index.php/api/check_code"
+        url_entry_code = "https://ingcoders.com/parking/index.php/api/card_code"
         if self.serial_port and self.serial_port.in_waiting > 0:
             data = self.serial_port.readline().decode(errors='ignore').strip()
             if not data:
@@ -128,11 +129,41 @@ class BarcodeReaderApp(QWidget):
 
                 if status == 0:
                     self.text_area.append("Barcode was rejected\n")
+                    print('Here')
                     # self.serial_port.write(b"EXIT_OK \n")
                     self.serial_port.write(b"EXIT_NO\n")
+                    self.serial_port.flush()
                 elif status == 1:
                     self.text_area.append("Barcode was accepted\n")
                     self.serial_port.write(b"EXIT_OK \n")
+                    self.serial_port.flush()
+
+            elif "ENTRY_SCAN" in data:
+                print(f"Entry barcode: {data}")
+                trimmed_barcode_entry = data[-9:]
+                payload_entry_code = {'code': f'{trimmed_barcode_entry}'} # Send as string, like in curl
+                headers_entry_code = {
+                    # Pretend to be curl
+                    "User-Agent": "curl/8.0.0",
+                    "Accept": "*/*",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                }
+
+                response_entry_code = requests.post(url_entry_code, data=payload_entry_code, headers=headers_entry_code, timeout=10)
+                entry_s = response_entry_code.text
+                print(f'Response entry code: {response_entry_code.text}')
+                entry_code_response_data = json.loads(entry_s)
+                entry_code_status = entry_code_response_data["status"]
+
+                self.text_area.append(f"Presented a barcode at the entrance [{trimmed_barcode_entry}]")
+
+                if entry_code_status == 0:
+                    self.text_area.append("Entry barcode was rejected\n")
+                    self.serial_port.write(b"ENTRY_NO\n")
+
+                elif entry_code_status == 1:
+                    self.text_area.append("Entry barcode was accepted\n")
+                    self.serial_port.write(b"ENTRY_OK\n")
             elif data.strip():
                 print(data)
                 self.text_area.append(f"\nNuevo código de barras leído: {data.strip()}\n")

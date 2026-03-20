@@ -32,7 +32,7 @@ class BarcodeReaderApp(QWidget):
         # Serial setup
         try:
             self.serial_port = serial.Serial(
-                port='COM7',      # Change this to your actual COM port
+                port='COM6',      # Change this to your actual COM port
                 baudrate=9600,
                 bytesize=serial.EIGHTBITS,
                 parity=serial.PARITY_NONE,

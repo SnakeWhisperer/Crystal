@@ -298,7 +298,7 @@ void loop() {
   
 
   long d = readUltrasonicCM();
-  if (d > 0 && d < 200) { // within 1 m, car under barrier
+  if (d > 0 && d < 300) { // within 1 m, car under barrier
     Serial.print("[Exit] Car detected at barrier");
     Serial.print(d);
     Serial.println(" cm");
